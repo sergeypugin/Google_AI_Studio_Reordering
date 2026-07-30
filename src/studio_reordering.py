@@ -21,7 +21,7 @@ SCOPES = ['https://www.googleapis.com/auth/drive']
 CREDENTIALS_FILE = 'data/credentials.json'
 TOKEN_FILE = 'data/token.json'
 CONFIG_FILE = 'data/config.json'
-max_workers = min(8, os.cpu_count())  # Макс. кол-во параллельных процессов
+max_workers = min(4, os.cpu_count()) if os.cpu_count() else 4  # Макс. кол-во параллельных процессов
 
 os.makedirs("data", exist_ok=True)
 
@@ -65,10 +65,14 @@ class GoogleDriveAdapter:
         if not chats_folder:
             logging.info("Папка 'Chats' не найдена. Создаю...")
             chats_folder = self.create_folder("Chats", studio_id)
+            if not chats_folder:
+                raise Exception("Не удалось создать папку 'Chats' на Google Диске")
         trash_folder = self.find_folder("_Trash", parent_id=studio_id)
         if not trash_folder:
             logging.info("Папка '_Trash' не найдена. Создаю...")
             trash_folder = self.create_folder("_Trash", studio_id)
+            if not trash_folder:
+                raise Exception("Не удалось создать папку '_Trash' на Google Диске")
         map_file = self.find_file("_map.json", parent_id=studio_id)
 
         return {
@@ -103,7 +107,7 @@ class GoogleDriveAdapter:
     def get_current_user_email(self):
         try:
             request = self.service.about().get(fields='user')
-            about = self.execute_with_retry(request)
+            about = self.execute_with_retry(request) or {}
             return about.get('user', {}).get('emailAddress', 'Неизвестно')
         except Exception:
             return 'Неизвестно'
@@ -122,7 +126,7 @@ class GoogleDriveAdapter:
         # Запускаем повторный вход с принудительным выбором аккаунта
         self.authenticate(force_select=True)
 
-    def execute_with_retry(self, request, max_attempts=4):
+    def execute_with_retry(self, request, max_attempts=6):
         for attempt in range(max_attempts):
             try:
                 return request.execute()
@@ -151,7 +155,7 @@ class GoogleDriveAdapter:
         except Exception:
             return None
 
-    def update_item(self, item_id, new_parent_id=None, new_name=None):
+    def update_item(self, item_id, new_parent_id=None, new_name=None, old_parent_id=None):
         # Атомарно перемещает и/или переименовывает объект за 1 HTTP-запрос!
         if new_parent_id and str(new_parent_id).startswith("temp_"):
             raise ValueError(f"Критическая ошибка: недопустимый ID целевой папки '{new_parent_id}'")
@@ -162,11 +166,12 @@ class GoogleDriveAdapter:
         if body:
             params['body'] = body
         if new_parent_id:
-            request = self.service.files().get(fileId=item_id, fields='parents')
-            file_info = self.execute_with_retry(request) or {}
-            current_parents = ",".join(file_info.get('parents', []))
+            if not old_parent_id:
+                request = self.service.files().get(fileId=item_id, fields='parents')
+                file_info = self.execute_with_retry(request) or {}
+                old_parent_id = ",".join(file_info.get('parents', []))
             params['addParents'] = new_parent_id
-            params['removeParents'] = current_parents
+            if old_parent_id: params['removeParents'] = old_parent_id
 
         request = self.service.files().update(**params)
         return self.execute_with_retry(request)
@@ -191,7 +196,7 @@ class GoogleDriveAdapter:
             query += f" and '{parent_id}' in parents"
         request = self.service.files().list(q=query, spaces='drive', fields='files(id, name)')
         results = self.execute_with_retry(request)
-        items = results.get('files', [])
+        items = (results or {}).get('files', [])
         if len(items) > 1:
             drive_link = f"https://drive.google.com/open?id={items[0]['id']}"
             logging.warning(
@@ -225,7 +230,7 @@ class GoogleDriveAdapter:
                     pageToken=page_token
                 )
                 results = self.execute_with_retry(request)
-                items = results.get('files', [])
+                items = (results or {}).get('files', [])
                 local_items.extend(items)
 
                 for item in items:
@@ -263,6 +268,7 @@ class GoogleDriveAdapter:
         try:
             request = self.service.files().get_media(fileId=file_id)
             content = self.execute_with_retry(request)
+            if not content: return None
             return json.loads(content.decode('utf-8'))
         except (UnicodeDecodeError, json.JSONDecodeError, HttpError):
             # Файл не является скачиваемым JSON (Google Doc, медиа или бинарный файл) — тихий пропуск
@@ -338,6 +344,7 @@ class AppLogic:
                     mode = self.prompt_choice('', "Введите 0, 1, 2 или 3: ", {"0", "1", "2", "3"})
                 if mode == "0":
                     self.api.switch_account()
+                    self.sys_folders = None
                     new_email = self.api.get_current_user_email()
                     print(f"\nУспешно! Новый аккаунт: `{new_email}`")
                 elif mode == "1":
@@ -462,7 +469,8 @@ class AppLogic:
                         if att_parent != ext_folder_id:
                             self.transaction_plan["move_items"].append({
                                 "item_id": att_id,
-                                "new_parent_id": ext_folder_id
+                                "new_parent_id": ext_folder_id,
+                                "old_parent_id": att_parent
                             })
                             vfs[att_id]['parents'] = [ext_folder_id]
                         claimed_attachments.add(att_id)
@@ -510,6 +518,7 @@ class AppLogic:
                         "old_parent_id": parent_id
                     })
             else:
+                if parent_id == self.sys_folders['trash_id']: continue
                 if item_id not in protected_file_ids and item['name'] not in system_names:
                     if parent_id not in useless_folder_ids:
                         self.transaction_plan["trash_items"].append({
@@ -554,7 +563,7 @@ class AppLogic:
             def _extract_file(item):
                 self.api.update_item(item['id'], new_parent_id=studio_id)
 
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = [executor.submit(_extract_file, f) for f in files_to_extract]
                 for future in as_completed(futures):
                     try:
@@ -569,7 +578,7 @@ class AppLogic:
             def _trash_file(item):
                 self.api.update_item(item['id'], new_parent_id=trash_id)
 
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = [executor.submit(_trash_file, f) for f in files_to_trash]
                 for future in as_completed(futures):
                     try:
@@ -592,7 +601,7 @@ class AppLogic:
         logging.info("ФАЗА 1: Анализ облака и виртуальная симуляция (VFS)")
         # 0. Загрузка древа файлов
         logging.info("Рекурсивное сканирование Google AI Studio...")
-        all_items = self.api.get_all_descendants(self.sys_folders['studio_id'])
+        all_items = self.api.get_all_descendants(self.sys_folders['studio_id'], exclude_ids={self.sys_folders['trash_id']})
         vfs = {item['id']: dict(item) for item in all_items}
         self.map_data = {}
         if self.sys_folders['map_id']:
@@ -695,11 +704,13 @@ class AppLogic:
                 self.transaction_plan["move_items"].append({
                     "item_id": item_id,
                     "new_parent_id": target_chat_folder_id,
+                    "old_parent_id": current_parent,
                     "new_name": safe_title
                 })
             elif move_needed:
                 self.transaction_plan["move_items"].append({
                     "item_id": item_id,
+                    "old_parent_id": current_parent,
                     "new_parent_id": target_chat_folder_id
                 })
                 vfs[item_id]['parents'] = [target_chat_folder_id]
@@ -707,6 +718,7 @@ class AppLogic:
             elif rename_needed:
                 self.transaction_plan["move_items"].append({
                     "item_id": item_id,
+                    "old_parent_id": current_parent,
                     "new_name": safe_title
                 })
                 vfs[item_id]['name'] = safe_title
@@ -717,6 +729,7 @@ class AppLogic:
                 if md_parent != target_chat_folder_id:
                     self.transaction_plan["move_items"].append({
                         "item_id": existing_md_id,
+                        "old_parent_id": current_parent,
                         "new_parent_id": target_chat_folder_id
                     })
                     vfs[existing_md_id]['parents'] = [target_chat_folder_id]
@@ -757,6 +770,7 @@ class AppLogic:
         for _ in range(2): logging.info("")
         logging.info(f"Всего чатов в `Google AI Studio`: {len(json_chats)}")
         logging.info(f"Всего файлов и папок в `Google AI Studio`: {len(all_items)}\n")
+        logging.info(f"(рекурсивно и без учёта содержимого папки `_Trash`)")
         logging.info(f"ПЛАН РАБОТЫ:")
         logging.info(f"Создать папок:        {len(self.transaction_plan['create_folders'])}")
         logging.info(f"Переместить файлов:   {len(self.transaction_plan['move_items'])}")
@@ -786,6 +800,7 @@ class AppLogic:
                     # Родитель уже существует (реальный ID), можно создавать сразу!
                     ready_queue.put(task["temp_id"])
             resolved_lock = threading.Lock()
+
             def _create_folder_worker():
                 while True:
                     # Поток спит, пока в очереди не появится готовая к созданию папка
@@ -797,14 +812,17 @@ class AppLogic:
                     try:
                         # Единственная долгая сетевая операция!
                         created_folder = self.api.create_folder(task["name"], real_parent)
-                        logging.debug(f"Создана папка: '{task['name']}' (ID: {created_folder['id']})")
-                        with resolved_lock: # Сохраняем реальный ID
-                            resolved_temp_ids[temp_id] = created_folder["id"]
-                        for child_id in children_map[temp_id]: # Разблокируем дочерние папки
-                            with resolved_lock:
-                                pending_dependencies[child_id] -= 1
-                                if pending_dependencies[child_id] == 0:
-                                    ready_queue.put(child_id)
+                        if created_folder and "id" in created_folder:
+                            logging.debug(f"Создана папка: '{task['name']}' (ID: {created_folder['id']})")
+                            with resolved_lock:  # Сохраняем реальный ID
+                                resolved_temp_ids[temp_id] = created_folder["id"]
+                            for child_id in children_map[temp_id]:  # Разблокируем дочерние папки
+                                with resolved_lock:
+                                    pending_dependencies[child_id] -= 1
+                                    if pending_dependencies[child_id] == 0:
+                                        ready_queue.put(child_id)
+                        else:
+                            logging.error(f"Не удалось создать папку '{task['name']}'. Зависимые папки пропущены.")
                     except Exception as e:
                         logging.error(f"Ошибка создания папки '{task['name']}': ", exc_info=True)
                         # Если родитель упал, снимаем зависшие дочерние задачи, чтобы не повесить join()!
@@ -832,6 +850,7 @@ class AppLogic:
                 self.api.update_item(
                     item_id=task["item_id"],
                     new_parent_id=real_parent,
+                    old_parent_id=task.get("old_parent_id"),
                     new_name=task.get("new_name")
                 )
 
@@ -853,7 +872,11 @@ class AppLogic:
                 uploaded = self.api.upload_file(
                     task["name"], real_parent, task["content"], mime_type="text/plain", file_id=task["file_id"]
                 )
-                return task["chat_id"], uploaded["id"]
+                if uploaded and "id" in uploaded:
+                    return task["chat_id"], uploaded["id"]
+                else:
+                    logging.error(f"Не удалось загрузить/обновить заметку '{task['name']}'.")
+                    return task["chat_id"], None
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = [executor.submit(_exec_upload, task) for task in self.transaction_plan["upload_files"]]
