@@ -519,62 +519,74 @@ class AppLogic:
                         })
 
     def rollback_to_root(self):
-        logging.info("СТАРТ ОТКАТА: Вытряхивание всех файлов в корень Google AI Studio...")
+        logging.info("СТАРТ ОТКАТА: Вытряхивание файлов в корень и очистка созданных заметок...")
         studio_id = self.sys_folders['studio_id']
         trash_id = self.sys_folders['trash_id']
         map_id = self.sys_folders['map_id']
 
-        # 1. Читаем карту _map.json, чтобы узнать ID всех созданных заметок
-        generated_note_ids = set()
+        # 1. Собираем ID всех сгенерированных заметок и самого _map.json
+        generated_md_ids = set()
         if map_id:
+            generated_md_ids.add(map_id)
             downloaded_map = self.api.download_json(map_id)
             if isinstance(downloaded_map, dict):
                 for info in downloaded_map.values():
                     if isinstance(info, dict) and info.get("note_id"):
-                        generated_note_ids.add(info["note_id"])
-
+                        generated_md_ids.add(info["note_id"])
         all_items = self.api.get_all_descendants(studio_id, exclude_ids={trash_id})
-        # 1. Извлекаем ВСЕ файлы из любых подпапок обратно в корень
-        # 2. Разделяем файлы на оригинальные (извлечь в корень) и искуственно созданные заметки (в _Trash)
-        files_to_trash = generated_note_ids
-        if map_id: files_to_trash.append(map_id)
-        files_to_extract = [item['id'] for item in all_items
-            if item['mimeType'] != 'application/vnd.google-apps.folder'
-                and item['id'] not in generated_note_ids
-                and studio_id not in item.get('parents', [])
-        ]
-        # 3. Верхнеуровневые папки (например, Chats) -> отправляем в _Trash
-        top_folders_to_trash = [
-            item for item in all_items
-            if item['mimeType'] == 'application/vnd.google-apps.folder'
-               and studio_id in item.get('parents', [])
-               and item['id'] != trash_id
-        ]
-        logging.info(f"Найдено файлов для перемещения в корень: {len(files_to_extract)}")
-        logging.info(f"Найдено созданных скриптом заметок для перемещения в корень: {len(files_to_trash)}")
+        files_to_extract = []
+        files_to_trash = []
+        top_folders_to_trash = []
+        # 2. Получаем исходники, созданные заметки и папки на верхнем уровне
+        for item in all_items:
+            if item['mimeType'] != 'application/vnd.google-apps.folder':
+                if item['id'] in generated_md_ids:
+                    files_to_trash.append(item)
+                elif studio_id not in item.get('parents', []):
+                    files_to_extract.append(item)
+            elif studio_id in item.get('parents', []) and item['id'] != trash_id:
+                top_folders_to_trash.append(item)
 
-        def extract_file(item):
-            old_parent = item.get('parents', [None])[0]
-            if old_parent:
-                self.api.update_item(item_id=item['id'], new_parent_id=studio_id)
-
+        # 3. Многопоточный перенос исходников в корень
         if files_to_extract:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [executor.submit(extract_file, f) for f in files_to_extract]
+            logging.info(f"Вытряхивание {len(files_to_extract)} исходных файлов в корень...")
+
+            def _extract_file(item):
+                self.api.update_item(item['id'], new_parent_id=studio_id)
+
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = [executor.submit(_extract_file, f) for f in files_to_extract]
                 for future in as_completed(futures):
                     try:
                         future.result()
                     except Exception:
-                        logging.error("Ошибка при вытряхивании файла в корень: ", exc_info=True)
-        # 3. Отправляем верхнеуровневые папки целиком в _Trash
-        logging.info("Перемещение верхнеуровневых папок в _Trash...")
-        for folder in top_folders_to_trash:
-            try:
-                self.api.update_item(folder['id'], trash_id)
-                logging.info(f"Папка '{folder['name']}' ушла в _Trash со всеми подпапками")
-            except Exception:
-                logging.error(f"Ошибка при переносе папки '{folder['name']}' в _Trash", exc_info=True)
-        logging.info("ОТКАТ ЗАВЕРШЕН! Все файлы в корне, а папки удалены.")
+                        logging.error("Ошибка при вытряхивании файла: ", exc_info=True)
+
+        # 4. Многопоточный перенос заметок и _map.json в _Trash
+        if files_to_trash:
+            logging.info(f"Перемещение {len(files_to_trash)} сгенерированных заметок и файла _map.json в _Trash...")
+
+            def _trash_file(item):
+                self.api.update_item(item['id'], new_parent_id=trash_id)
+
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = [executor.submit(_trash_file, f) for f in files_to_trash]
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception:
+                        logging.error("Ошибка при отправке заметок в _Trash: ", exc_info=True)
+
+        # 5. Перенос верхнеуровневых папок (Chats) в _Trash
+        if top_folders_to_trash:
+            logging.info(f"Перемещение {len(top_folders_to_trash)} папок в _Trash...")
+            for folder in top_folders_to_trash:
+                try:
+                    self.api.update_item(folder['id'], new_parent_id=trash_id)
+                except Exception:
+                    logging.error(f"Ошибка при переносе папки '{folder['name']}' в _Trash: ", exc_info=True)
+
+        logging.info("ОТКАТ ЗАВЕРШЕН! Исходные файлы в корне, а заметки, _map.json и папки ушли в _Trash.")
 
     def phase_1_analyze(self, thoughts_needed):
         logging.info("ФАЗА 1: Анализ облака и виртуальная симуляция (VFS)")
