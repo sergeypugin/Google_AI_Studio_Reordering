@@ -799,7 +799,6 @@ class AppLogic:
                         with resolved_lock:
                             for child_id in children_map[temp_id]:
                                 pending_dependencies[child_id] = -1
-                finally:
                     finally:
                         # Сообщаем очереди, что задача выполнена
                         ready_queue.task_done()
