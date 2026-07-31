@@ -98,11 +98,17 @@ class GoogleDriveAdapter:
                 if not os.path.exists(CREDENTIALS_FILE):
                     raise FileNotFoundError(f"Файл {CREDENTIALS_FILE} не найден")
 
-                flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-                self.creds = flow.run_local_server(port=0, prompt='select_account')
+                try:
+                    flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
+                    self.creds = flow.run_local_server(port=0, prompt='select_account')
+                except Exception as e:
+                    logging.error(f"Авторизация в браузере не была завершена: {e}")
+                    print("\nАвторизация отменена или истекло время ожидания в браузере. ")
+                    return False
 
             with open(TOKEN_FILE, 'w') as token:
                 token.write(self.creds.to_json())
+        return True
 
     def get_current_user_email(self):
         try:
