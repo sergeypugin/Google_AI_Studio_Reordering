@@ -2,9 +2,9 @@
 
 Для этого сделайте следующее:
 1. Перейдите в Вашем диске в папку `Google AI Studio`.
-2. Найдите по заголовку файлы Ваших чатов, которые Вы хотите сохранить как md-заметку (обычно у него чёрного цвета аватарка)
+2. Найдите по заголовку файлы Ваших чатов, которые Вы хотите сохранить как md-заметку (обычно у них чёрного цвета аватарка)
 3. Скачайте этот файл (он будет без расширения, это совершенно нормально)
-4. Перейдите по ссылке: [Google_AI_Studio_Exporter.ipynb - Colab](https://colab.research.google.com/github/sergeypugin/Google_AI_Studio_Reordering/blob/converter_colab/Google_AI_Studio_Exporter.ipynb)
+4. Перейдите по ссылке: [Google_AI_Studio_Exporter.ipynb - Colab](https://colab.research.google.com/github/sergeypugin/Google_AI_Studio_Reordering/blob/main/Google_AI_Studio_Exporter.ipynb)
 5. Кликните на кнопку `Play`. Далее загрузите Ваши чаты через проводник
 6. Готово! У Вас скачаются заметки для каждого чата, который Вы загрузили
 
