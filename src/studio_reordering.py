@@ -104,7 +104,6 @@ class GoogleDriveAdapter:
                     self.creds = flow.run_local_server(port=0, prompt='select_account')
                 except Exception as e:
                     logging.error(f"Авторизация в браузере не была завершена: {e}")
-                    logging.info("\nАвторизация отменена или истекло время ожидания в браузере. ")
                     return False
 
             with open(TOKEN_FILE, 'w') as token:
@@ -299,7 +298,7 @@ class AppLogic:
             choice = input(clue_text).strip()
             if choice in valid_options:
                 return choice
-            logging.info(error_template.format(choice=choice))
+            logging.warning(error_template.format(choice=choice))
 
     def run_mode_1(self, thoughts_needed, auto_confirm):
         self.sys_folders = self.api.init_infrastructure()
@@ -343,7 +342,8 @@ class AppLogic:
                 logging.info(f"Текущий аккаунт Google: `{current_email}`")
                 mode = str(cfg.get("mode", "")).strip() if cfg else ""
                 if mode not in {'0', '1', '2', '3'}:
-                    logging.info("\n ВЫБЕРИТЕ РЕЖИМ:")
+                    logging.info("")
+                    logging.info(" ВЫБЕРИТЕ РЕЖИМ:")
                     logging.info(" 0 - сменить гугл-аккаунт")
                     logging.info(" 1 - Навести порядок: рассортировать чаты по папкам и создать заметки")
                     logging.info(" 2 - Откат: вытряхнуть все файлы в папку `Google AI Studio`")
@@ -353,7 +353,7 @@ class AppLogic:
                     self.api.switch_account()
                     self.sys_folders = None
                     new_email = self.api.get_current_user_email()
-                    logging.info(f"\nУспешно! Новый аккаунт: `{new_email}`")
+                    logging.info(f"Успешно! Новый аккаунт: `{new_email}`")
                 elif mode == "1":
                     raw_thoughts = cfg.get("include_thoughts")
                     self.run_mode_1(
@@ -363,12 +363,12 @@ class AppLogic:
                 elif mode == "2":
                     self.run_mode_2()
                 else:
-                    logging.info("Программа завершена")
+                    logging.info("Программа завершена\n\n\n")
                     break
                 if cfg.get("mode") in {"0", "1", "2"}:
-                    logging.info("Программа завершена")
+                    logging.info("Программа завершена\n\n\n")
                     break
-                input("\nНажмите Enter, чтобы продолжить")
+                input("Нажмите Enter, чтобы продолжить")
         except Exception:
             logging.error("Критическая ошибка: ", exc_info=True)
 
@@ -770,13 +770,13 @@ class AppLogic:
                         "file_id": existing_md_id  # Если None - создастся новый файл, если есть ID - обновится
                     })
                 else:
-                    logging.error(f"Для чата {item_name} парсер не сработал!!!\n{msg}")
+                    logging.error(f"Для чата {item_name} парсер не сработал: {msg}")
         # 4. Расчет сборщика мусора
         self.run_mark_and_sweep(vfs, protected_file_ids, system_names)
 
         for _ in range(2): logging.info("")
         logging.info(f"Всего чатов в `Google AI Studio`: {len(json_chats)}")
-        logging.info(f"Всего файлов и папок в `Google AI Studio`: {len(all_items)}\n")
+        logging.info(f"Всего файлов и папок в `Google AI Studio`: {len(all_items)}")
         logging.info(f"(рекурсивно и без учёта содержимого папки `_Trash`)")
         logging.info(f"ПЛАН РАБОТЫ:")
         logging.info(f"Создать папок:        {len(self.transaction_plan['create_folders'])}")
