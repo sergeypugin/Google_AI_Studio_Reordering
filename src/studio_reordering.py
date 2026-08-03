@@ -36,7 +36,8 @@ logging.basicConfig(
     level=logging.DEBUG,
     handlers=[file_handler, console_handler]
 )
-
+for logger_name in ['googleapiclient.discovery', 'googleapiclient.http', 'google_auth_httplib2']:
+    logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 class GoogleDriveAdapter:
     def __init__(self):
@@ -103,7 +104,7 @@ class GoogleDriveAdapter:
                     self.creds = flow.run_local_server(port=0, prompt='select_account')
                 except Exception as e:
                     logging.error(f"Авторизация в браузере не была завершена: {e}")
-                    print("\nАвторизация отменена или истекло время ожидания в браузере. ")
+                    logging.info("\nАвторизация отменена или истекло время ожидания в браузере. ")
                     return False
 
             with open(TOKEN_FILE, 'w') as token:
@@ -294,23 +295,23 @@ class AppLogic:
     def prompt_choice(question, clue_text, valid_options, error_template="Вы ввели `{choice}`, попробуйте ещё раз"):
         # Вспомогательный метод: запрашивает ввод у пользователя, пока тот не введет допустимый вариант
         while True:
-            print(question)
+            logging.info(question)
             choice = input(clue_text).strip()
             if choice in valid_options:
                 return choice
-            print(error_template.format(choice=choice))
+            logging.info(error_template.format(choice=choice))
 
     def run_mode_1(self, thoughts_needed, auto_confirm):
         self.sys_folders = self.api.init_infrastructure()
         if thoughts_needed is None:
-            print()
+            logging.info("")
             choice = self.prompt_choice("Нужно ли сохранять в заметку thoughts моделей?",
                                         "Введите 1, чтобы сохранять, или 2, чтобы не сохранять: ", {"1", "2"})
-            print()
+            logging.info("")
             thoughts_needed = (choice == "1")
-        print()
+        logging.info("")
         self.phase_1_analyze(thoughts_needed=thoughts_needed)
-        print()
+        logging.info("")
         # Если авто-подтверждение выключено, запрашиваем подтверждение
         should_execute = auto_confirm
         if not should_execute:
@@ -318,9 +319,9 @@ class AppLogic:
                                         "Введите 1, чтобы начать, и 2, чтобы отказаться: ", {"1", "2"})
             should_execute = (choice == "1")
         if should_execute:
-            print()
+            logging.info("")
             self.phase_2_execute()
-            print()
+            logging.info("")
 
     def run_mode_2(self):
         # Единая точка запуска Режима 2 (откат)
@@ -339,20 +340,20 @@ class AppLogic:
         try:
             while True:
                 current_email = self.api.get_current_user_email()
-                print(f"Текущий аккаунт Google: `{current_email}`")
+                logging.info(f"Текущий аккаунт Google: `{current_email}`")
                 mode = str(cfg.get("mode", "")).strip() if cfg else ""
                 if mode not in {'0', '1', '2', '3'}:
-                    print("\n ВЫБЕРИТЕ РЕЖИМ:")
-                    print(" 0 - сменить гугл-аккаунт")
-                    print(" 1 - Навести порядок: рассортировать чаты по папкам и создать заметки")
-                    print(" 2 - Откат: вытряхнуть все файлы в папку `Google AI Studio`")
-                    print(" 3 - Завершить программу")
+                    logging.info("\n ВЫБЕРИТЕ РЕЖИМ:")
+                    logging.info(" 0 - сменить гугл-аккаунт")
+                    logging.info(" 1 - Навести порядок: рассортировать чаты по папкам и создать заметки")
+                    logging.info(" 2 - Откат: вытряхнуть все файлы в папку `Google AI Studio`")
+                    logging.info(" 3 - Завершить программу")
                     mode = self.prompt_choice('', "Введите 0, 1, 2 или 3: ", {"0", "1", "2", "3"})
                 if mode == "0":
                     self.api.switch_account()
                     self.sys_folders = None
                     new_email = self.api.get_current_user_email()
-                    print(f"\nУспешно! Новый аккаунт: `{new_email}`")
+                    logging.info(f"\nУспешно! Новый аккаунт: `{new_email}`")
                 elif mode == "1":
                     raw_thoughts = cfg.get("include_thoughts")
                     self.run_mode_1(
